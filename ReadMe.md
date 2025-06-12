@@ -90,7 +90,7 @@ WEB_PORT = 8081  # Use different port
 
 ## File Structure
 ```
-ogol-timer/
+logo-timer/
 ├── sub-timer.py     # Main application
 ├── overlay.html     # OBS overlay page
 ├── overlay.css      # Overlay styling
