@@ -6,3 +6,8 @@
 - Displays time left until the end of the timer
 - Notifications for new subscriptions
 - Ability to resume the timer after pausing it
+
+
+## Startup
+1. Start the sub-timer.py
+2. fuck you
