@@ -208,8 +208,8 @@ class Bot(commands.Bot):
         if not (ctx.author.is_mod or ctx.author.name.lower() == CHANNEL.lower()):
             return
             
-        if minutes < 0 or minutes > 600:  # Max 10 Stunden
-            await ctx.send("❌ Minutes must be between 0 and 600.")
+        if minutes < 0 or minutes > 10000:  #Max 100 Stunden
+            await ctx.send("❌ Minutes must be between 0 and 10000.")
             return
             
         current_time = datetime.now()
