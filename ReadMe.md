@@ -46,8 +46,7 @@ python sub-timer.py
 ### 5. Add OBS Overlay
 1. In OBS, add a new **Browser Source**
 2. Set URL to: `http://localhost:8080/overlay.html`
-3. Set Width: 800, Height: 200
-4. Check "Refresh browser when scene becomes active"
+3. Check "Refresh browser when scene becomes active"
 
 ## Customization
 
@@ -93,8 +92,6 @@ WEB_PORT = 8081  # Use different port
 logo-timer/
 ├── sub-timer.py     # Main application
 ├── overlay.html     # OBS overlay page
-├── overlay.css      # Overlay styling
-├── overlay.js       # Overlay JavaScript
 ├── README.md        # This file
 └── LICENSE          # MIT License
 ```
