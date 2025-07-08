@@ -1,14 +1,17 @@
 import asyncio
 import logging
+import json
+import os
+from datetime import datetime, timedelta
 from aiohttp import web
 from twitchio.ext import commands
-from datetime import datetime, timedelta
 
 # === CONFIGURATION ===
-TOKEN = 'oauth:l9a60th0sn3boka6u2skwct73d0njs'  # Achte darauf, dass das Prefix "oauth:" enthalten ist!
-CHANNEL = 'real_atzock'  # Dein Twitch-Kanalname (klein geschrieben)
-TIME_PER_SUB = timedelta(minutes=3)  # Zeit, die pro Sub hinzugefügt wird
+TOKEN = 'oauth:l9a60th0sn3boka6u2skwct73d0njs'
+CHANNEL = 'real_atzock'
+TIME_PER_SUB = timedelta(minutes=3)
 WEB_PORT = 8080
+SAVE_FILE = 'timer_data.json'  # Datei für die Persistierung
 
 # === GLOBALS ===
 end_time = datetime.now()
@@ -23,6 +26,110 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# === PERSISTENCE FUNCTIONS ===
+def save_timer_state():
+    """Speichert den aktuellen Timer-Zustand in eine JSON-Datei."""
+    try:
+        current_time = datetime.now()
+        
+        # Berechne die effektive verbleibende Zeit
+        remaining = get_remaining_time()
+        
+        # Berechne die aktuelle Pausenzeit falls pausiert
+        current_pause_duration = timedelta(0)
+        if paused and pause_start_time:
+            current_pause_duration = current_time - pause_start_time
+        
+        data = {
+            'saved_at': current_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'paused': paused,
+            'total_pause_time_seconds': total_pause_time.total_seconds(),
+            'current_pause_duration_seconds': current_pause_duration.total_seconds(),
+            'pause_start_time': pause_start_time.isoformat() if pause_start_time else None,
+            'remaining_time_seconds': remaining.total_seconds(),
+            'version': '1.1'
+        }
+        
+        with open(SAVE_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info(f"💾 Timer state saved: {format_time(remaining)} remaining {'(PAUSED)' if paused else '(RUNNING)'}")
+        
+    except Exception as e:
+        logger.error(f"Error saving timer state: {e}")
+
+def load_timer_state():
+    """Lädt den Timer-Zustand aus der JSON-Datei."""
+    global end_time, paused, total_pause_time, pause_start_time
+    
+    try:
+        if not os.path.exists(SAVE_FILE):
+            logger.info("📂 No saved timer state found, starting fresh")
+            return
+        
+        with open(SAVE_FILE, 'r') as f:
+            data = json.load(f)
+        
+        saved_at = datetime.fromisoformat(data['saved_at'])
+        current_time = datetime.now()
+        offline_duration = current_time - saved_at
+        
+        # Lade gespeicherte Werte
+        end_time = datetime.fromisoformat(data['end_time'])
+        paused = data['paused']
+        total_pause_time = timedelta(seconds=data['total_pause_time_seconds'])
+        pause_start_time = datetime.fromisoformat(data['pause_start_time']) if data['pause_start_time'] else None
+        
+        # Behandle verschiedene Versionen der Datei
+        version = data.get('version', '1.0')
+        
+        if paused:
+            if version >= '1.1' and 'current_pause_duration_seconds' in data:
+                # Neue Version: Verwende die gespeicherte Pausenzeit
+                saved_pause_duration = timedelta(seconds=data['current_pause_duration_seconds'])
+                total_pause_time += saved_pause_duration
+                logger.info(f"Added saved pause duration: {format_time(saved_pause_duration)}")
+            elif pause_start_time:
+                # Alte Version: Berechne die Pausenzeit bis zum Speichern
+                pause_duration_before_save = saved_at - pause_start_time
+                total_pause_time += pause_duration_before_save
+                logger.info(f"Added pause time before save: {format_time(pause_duration_before_save)}")
+            
+            # Füge die komplette Offline-Zeit zur Pausenzeit hinzu (da pausiert)
+            total_pause_time += offline_duration
+            logger.info(f"Added offline time to pause: {format_time(offline_duration)}")
+            
+            # Setze die neue Pause-Startzeit auf jetzt
+            pause_start_time = current_time
+        else:
+            # Timer war nicht pausiert, die Offline-Zeit ist normale Laufzeit
+            logger.info(f"Timer was running, offline time: {format_time(offline_duration)}")
+        
+        remaining = get_remaining_time()
+        
+        logger.info(f"📤 Timer state loaded from {format_time(offline_duration)} ago")
+        logger.info(f"⏱️ Current timer: {format_time(remaining)} ({'PAUSED' if paused else 'RUNNING'})")
+        logger.info(f"🔄 Total pause time: {format_time(total_pause_time)}")
+        
+        # Informiere über den Status
+        if remaining <= timedelta(0) and not paused:
+            logger.info("⏰ Timer was already expired")
+        
+    except Exception as e:
+        logger.error(f"Error loading timer state: {e}")
+        logger.info("🔄 Starting with fresh timer state")
+
+async def auto_save_timer():
+    """Speichert den Timer-Zustand alle 10 Sekunden automatisch."""
+    while True:
+        try:
+            save_timer_state()
+            await asyncio.sleep(10)  # Alle 10 Sekunden speichern
+        except Exception as e:
+            logger.error(f"Error in auto-save: {e}")
+            await asyncio.sleep(10)
 
 def get_remaining_time():
     """Berechnet die verbleibende Zeit unter Berücksichtigung von Pausen."""
@@ -128,6 +235,9 @@ class Bot(commands.Bot):
                 end_time += TIME_PER_SUB
                 remaining = get_remaining_time()
                 logger.info(f"Time added: {TIME_PER_SUB}, remaining: {format_time(remaining)}")
+            
+            # Speichere den neuen Zustand sofort
+            save_timer_state()
                 
         except Exception as e:
             logger.error(f"Error handling subscription: {e}")
@@ -150,6 +260,7 @@ class Bot(commands.Bot):
         remaining = get_remaining_time()
         await ctx.send(f"⏸️ Timer paused at {format_time(remaining)}")
         logger.info("Timer paused")
+        save_timer_state()  # Speichere sofort
 
     @commands.command(name="resume")
     async def resume_cmd(self, ctx):
@@ -174,6 +285,7 @@ class Bot(commands.Bot):
         remaining = get_remaining_time()
         await ctx.send(f"▶️ Timer resumed with {format_time(remaining)} remaining")
         logger.info("Timer resumed")
+        save_timer_state()  # Speichere sofort
 
     @commands.command(name="timer")
     async def timer_cmd(self, ctx):
@@ -199,6 +311,7 @@ class Bot(commands.Bot):
         remaining = get_remaining_time()
         await ctx.send(f"➕ Added {minutes} minute(s). Remaining: {format_time(remaining)}")
         logger.info(f"Manual time added: {minutes} minutes")
+        save_timer_state()  # Speichere sofort
 
     @commands.command(name="settime")
     async def settime_cmd(self, ctx, minutes: int):
@@ -208,7 +321,7 @@ class Bot(commands.Bot):
         if not (ctx.author.is_mod or ctx.author.name.lower() == CHANNEL.lower()):
             return
             
-        if minutes < 0 or minutes > 10000:  #Max 100 Stunden
+        if minutes < 0 or minutes > 10000:
             await ctx.send("❌ Minutes must be between 0 and 10000.")
             return
             
@@ -217,26 +330,52 @@ class Bot(commands.Bot):
         remaining = get_remaining_time()
         await ctx.send(f"🕐 Timer set to {format_time(remaining)}")
         logger.info(f"Timer set to: {minutes} minutes")
+        save_timer_state()  # Speichere sofort
+
+    @commands.command(name="testsub")
+    async def testsub_cmd(self, ctx):
+        """Simuliert ein Subscription-Event (nur für Mods/Broadcaster)."""
+        if not (ctx.author.is_mod or ctx.author.name.lower() == CHANNEL.lower()):
+            await ctx.send("❌ Only moderators can test subscriptions.")
+            return
+        
+        global end_time
+        try:
+            subscriber = ctx.author.name
+            logger.info(f"🧪 TEST: Simulating subscription from {subscriber}")
+
+            current_time = datetime.now()
+            if end_time <= current_time:
+                end_time = current_time + TIME_PER_SUB
+                logger.info(f"Timer started: {TIME_PER_SUB} added")
+            else:
+                end_time += TIME_PER_SUB
+                remaining = get_remaining_time()
+                logger.info(f"Time added: {TIME_PER_SUB}, remaining: {format_time(remaining)}")
+            
+            remaining = get_remaining_time()
+            await ctx.send(f"🧪 TEST SUB: Added {TIME_PER_SUB} to timer! Remaining: {format_time(remaining)}")
+            save_timer_state()  # Speichere sofort
+            
+        except Exception as e:
+            logger.error(f"Error in test subscription: {e}")
+            await ctx.send("❌ Error simulating subscription.")
+
+    @commands.command(name="savetimer")
+    async def savetimer_cmd(self, ctx):
+        """Speichert den Timer-Zustand manuell (nur für Mods/Broadcaster)."""
+        if not (ctx.author.is_mod or ctx.author.name.lower() == CHANNEL.lower()):
+            return
+        
+        save_timer_state()
+        remaining = get_remaining_time()
+        await ctx.send(f"💾 Timer state saved! Current: {format_time(remaining)}")
 
     async def event_message(self, message):
         """Behandelt alle Chat-Nachrichten."""
-        # Ignoriere Bot-Nachrichten
         if message.echo:
             return
-            
-        # Verarbeite Commands
         await self.handle_commands(message)
-
-# === Error Handler ===
-async def handle_errors():
-    """Überwacht Fehler und Verbindungsstatus."""
-    try:
-        while True:
-            await asyncio.sleep(60)
-            if not clients:
-                logger.info("No WebSocket clients connected")
-    except Exception as e:
-        logger.error(f"Error handler exception: {e}")
 
 # === Web Server Setup ===
 async def setup_webserver():
@@ -253,38 +392,48 @@ async def setup_webserver():
     logger.info(f"🌐 Web server started on http://localhost:{WEB_PORT}")
     logger.info("📁 Overlay available at: overlay.html")
 
+async def shutdown_handler():
+    """Behandelt das ordnungsgemäße Herunterfahren."""
+    logger.info("🛑 Shutting down, saving timer state...")
+    save_timer_state()
+    logger.info("💾 Timer state saved on shutdown")
+
 async def main():
     """Hauptfunktion - startet alle Komponenten."""
     # Validiere Konfiguration
     if TOKEN == 'oauth:your_oauth_token_here' or CHANNEL == 'your_channel_name_here':
         logger.error("❌ Please configure TOKEN and CHANNEL in the script!")
-        logger.info("💡 Get your token from: https://twitchtokengenerator.com/")
         return
 
+    # Lade gespeicherten Timer-Zustand
+    load_timer_state()
+    
     # Starte Web-Server
     await setup_webserver()
     
     # Starte Background-Tasks
     asyncio.create_task(notify_clients())
-    asyncio.create_task(handle_errors())
+    asyncio.create_task(auto_save_timer())  # Auto-Save alle 10 Sekunden
 
     # Starte Bot
     bot = Bot()
     logger.info("🤖 Starting Twitch bot...")
     
     try:
-        await bot.start()  # Verwende await für bessere Fehlerbehandlung
+        await bot.start()
     except Exception as e:
         logger.error(f"Bot error: {e}")
+        await shutdown_handler()
         raise
 
-# === Start Script ===
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("👋 Shutting down...")
+        # save_timer_state() wird durch shutdown_handler() aufgerufen
     except Exception as e:
         logger.error(f"Application error: {e}")
+        save_timer_state()  # Letzte Rettung
         import traceback
         traceback.print_exc()

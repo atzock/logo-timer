@@ -33,7 +33,8 @@
     #paused {
       color: red;
       font-size: 32px;
-      text-align: center;
+      text-align: left;
+      margin-left: 20px;
       margin-top: 10px;
       text-shadow: 0 0 5px red;
       animation: blink 2s infinite alternate;
@@ -198,7 +199,7 @@
 <body>
   <div id="timer">00:00:00</div>
   <div id="paused" style="display: none;">
-    <p>Pausiert ...</p>
+    <p>Pausiert...</p>
   </div>
   <div class="particles" id="particles"></div>
 
@@ -209,6 +210,8 @@
     let socket;
     let reconnectInterval;
     let lastTime = "00:00:00";
+    let lastPausedTime = null; // Track the last time when paused
+    let wasJustPaused = false;
     let isTimerZero = false;
     let particleInterval;
 
@@ -230,6 +233,10 @@
             currentTime = data.replace("PAUSED ", "");
             timer.textContent = currentTime;
             
+            // Store the paused time and set flag
+            lastPausedTime = currentTime;
+            wasJustPaused = true;
+            
             // Remove any end-state classes when paused
             timer.classList.remove("timer-ended", "timer-zero");
             stopParticles();
@@ -239,8 +246,15 @@
             timer.textContent = currentTime;
             
             // Check if time was added (sub animation)
-            if (timeIncreased(lastTime, currentTime)) {
+            // Skip the check if we were just paused and resumed to avoid false positives
+            if (!wasJustPaused && timeIncreased(lastTime, currentTime)) {
               triggerSubAnimation();
+            }
+            
+            // Reset the pause flag after the first update when resumed
+            if (wasJustPaused) {
+              wasJustPaused = false;
+              console.log("🔄 Timer resumed, skipping increase check for this update");
             }
             
             // Check if timer reached 00:00:00
@@ -257,7 +271,10 @@
             }
           }
           
-          lastTime = currentTime;
+          // Update lastTime only if not paused, or if it's the first paused update
+          if (!data.startsWith("PAUSED") || lastPausedTime === null) {
+            lastTime = currentTime;
+          }
         };
        
         socket.onclose = () => {
@@ -266,6 +283,9 @@
           pausedBanner.style.display = "none";
           timer.classList.remove("timer-ended", "timer-zero");
           stopParticles();
+          // Reset state on disconnect
+          lastPausedTime = null;
+          wasJustPaused = false;
           attemptReconnect();
         };
        
@@ -282,7 +302,11 @@
     function timeIncreased(oldTime, newTime) {
       const oldSeconds = timeToSeconds(oldTime);
       const newSeconds = timeToSeconds(newTime);
-      return newSeconds > oldSeconds;
+      const difference = newSeconds - oldSeconds;
+      
+      // Consider it an increase if the difference is significant (more than 2 seconds)
+      // This helps avoid false positives from small timing variations
+      return difference > 2;
     }
 
     function timeToSeconds(timeStr) {
@@ -291,6 +315,7 @@
     }
 
     function triggerSubAnimation() {
+      console.log("🎉 Sub detected! Triggering animation");
       timer.classList.remove("sub-added");
       // Force reflow
       timer.offsetHeight;
